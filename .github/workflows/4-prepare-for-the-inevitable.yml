@@ -1,0 +1,218 @@
+name: Step 4 # 불가피한 것에 대비하기
+
+on:
+  push:
+    branches:
+      - prepare-to-collaborate
+    paths:
+      - ".github/dependabot.yml"
+      - "SECURITY.md"
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+env:
+  STEP_5_FILE: ".github/steps/5-merge.md"
+
+jobs:
+  find_exercise:
+    if: |
+      !github.event.repository.is_template
+    name: 실습 이슈 찾기
+    uses: skills-kr/exercise-toolkit/.github/workflows/find-exercise-issue.yml@kr-v0.6.0
+
+  check_step_work:
+    name: 단계 작업 확인
+    runs-on: ubuntu-latest
+    needs: [find_exercise]
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 응답 템플릿 가져오기
+        uses: actions/checkout@v4
+        with:
+          repository: skills-kr/exercise-toolkit
+          path: exercise-toolkit
+          # Results table still uses old format. Needs refactored to update.
+          ref: kr-v0.6.0
+
+      - name: 댓글 업데이트 - 작업 확인 중
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/checking-work.md \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # START: Check practical exercise
+
+      - name: Dependabot 설정 확인
+        id: check-dependabot-config
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Result object to store the message
+            let result = {
+              name: 'dependabot.yml',
+              passed: true,
+              message: ''
+            }
+
+            // Check that file exists
+            if (!fs.existsSync('.github/dependabot.yml')) {
+              result.passed = false;
+              result.message = 'File is missing.';
+            }
+
+            return result;
+
+      - name: 보안 정책 확인
+        id: check-security-policy
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Result object to store the message
+            let result = {
+              name: 'SECURITY.md',
+              passed: true,
+              message: ''
+            }
+
+            // Check that file exists
+            if (!fs.existsSync('SECURITY.md')) {
+              result.passed = false;
+              result.message = 'File is missing.';
+            }
+
+            return result;
+
+      - name: 전체 결과 확인
+        id: check-all-results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const checks = [
+              JSON.parse(process.env['check1']),
+              JSON.parse(process.env['check2'])
+            ];
+
+            const result = checks.every(check => check.passed);
+            return result
+        env:
+          check1: ${{ steps.check-dependabot-config.outputs.result }}
+          check2: ${{ steps.check-security-policy.outputs.result }}
+
+      - name: 메시지 작성 - 단계 결과
+        id: build-message-step-results
+        uses: skills/action-text-variables@v2
+        with:
+          template-file: exercise-toolkit/markdown-templates/step-feedback/step-results.md
+          template-vars: >
+            {
+              "step_number": 4,
+              "passed": ${{ steps.check-all-results.outputs.result }},
+              "results_table": [
+                  ${{ steps.check-dependabot-config.outputs.result }},
+                  ${{ steps.check-security-policy.outputs.result }}
+                ]
+            }
+
+      - name: 댓글 생성 - 단계 결과
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body "$COMMENT_BODY" \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ steps.build-message-step-results.outputs.updated-text }}
+
+      - name: 검사 미통과 시 작업 실패
+        if: steps.check-all-results.outputs.result == 'false'
+        run: exit 1
+
+      # END: Check practical exercise
+
+      - name: 메시지 작성 - 단계 완료
+        id: build-message-step-finish
+        uses: skills/action-text-variables@v2
+        with:
+          template-file: exercise-toolkit/markdown-templates/step-feedback/step-finished-prepare-next-step.md
+          template-vars: |
+            next_step_number: 5
+
+      - name: 댓글 업데이트 - 단계 완료
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body "$ISSUE_BODY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_BODY: ${{ steps.build-message-step-finish.outputs.updated-text }}
+
+  post_next_step_content:
+    name: 다음 단계 내용 게시
+    needs: [find_exercise, check_step_work]
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 응답 템플릿 가져오기
+        uses: actions/checkout@v4
+        with:
+          repository: skills-kr/exercise-toolkit
+          path: exercise-toolkit
+          ref: kr-v0.6.0
+
+      - name: 댓글 생성 - 단계 내용 추가
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file "$STEP_5_FILE"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 댓글 생성 - 진행 상황 확인 중
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/watching-for-progress.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 현재 워크플로우 비활성화 및 다음 워크플로우 활성화
+        run: |
+          gh workflow disable "Step 4" || true
+          gh workflow enable "Step 5" || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Workshop Tracker에 단계 보고
+        if: success()
+        continue-on-error: true
+        run: |
+          SESSION_ID=$(jq -r '.sessionId' .github/workshop-config.json)
+          TRACK=$(jq -r '.track' .github/workshop-config.json)
+          API_URL=$(jq -r '.apiUrl' .github/workshop-config.json)
+          curl -s -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "sessionId": "'"$SESSION_ID"'",
+              "type": "step",
+              "step": 4,
+              "description": "보안 대비",
+              "username": "'"$GITHUB_ACTOR"'",
+              "repo": "'"$GITHUB_REPOSITORY"'",
+              "track": "'"$TRACK"'",
+              "runId": "'"$GITHUB_RUN_ID"'"
+            }' || true
